@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../api_demo/screens/post_list_screen.dart';
 import 'home_ui.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -11,6 +12,15 @@ class HomeScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('SkillSwap'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.api, tooltip: 'API Demo'),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const PostListScreen()),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
