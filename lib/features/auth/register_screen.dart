@@ -18,8 +18,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   Future<void> register() async {
     setState(() => loading = true);
     try {
-      UserCredential user = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(
+      UserCredential user =
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: emailCtrl.text.trim(),
         password: passCtrl.text.trim(),
       );
@@ -46,29 +46,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
               style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 24),
-
             _field(nameCtrl, 'Name', Icons.person),
             const SizedBox(height: 16),
-
             _field(emailCtrl, 'Email', Icons.email),
             const SizedBox(height: 16),
-
             _field(
               passCtrl,
               'Password',
               Icons.lock,
               obscure: hidePassword,
               suffix: IconButton(
-                icon: Icon(hidePassword
-                    ? Icons.visibility_off
-                    : Icons.visibility),
-                onPressed: () =>
-                    setState(() => hidePassword = !hidePassword),
+                icon: Icon(
+                    hidePassword ? Icons.visibility_off : Icons.visibility),
+                onPressed: () => setState(() => hidePassword = !hidePassword),
               ),
             ),
-
             const SizedBox(height: 24),
-
             SizedBox(
               width: double.infinity,
               height: 52,
@@ -104,8 +97,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         labelText: label,
         filled: true,
         fillColor: Colors.white,
-        border:
-            OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
       ),
     );
   }

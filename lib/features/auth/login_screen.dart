@@ -56,16 +56,13 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 6),
               const Text('Welcome back!'),
-
               const SizedBox(height: 32),
-
               _inputField(
                 controller: emailCtrl,
                 label: 'Email',
                 icon: Icons.email,
               ),
               const SizedBox(height: 16),
-
               _inputField(
                 controller: passCtrl,
                 label: 'Password',
@@ -73,17 +70,12 @@ class _LoginScreenState extends State<LoginScreen> {
                 obscure: hidePassword,
                 suffix: IconButton(
                   icon: Icon(
-                    hidePassword
-                        ? Icons.visibility_off
-                        : Icons.visibility,
+                    hidePassword ? Icons.visibility_off : Icons.visibility,
                   ),
-                  onPressed: () =>
-                      setState(() => hidePassword = !hidePassword),
+                  onPressed: () => setState(() => hidePassword = !hidePassword),
                 ),
               ),
-
               const SizedBox(height: 24),
-
               SizedBox(
                 width: double.infinity,
                 height: 52,
@@ -103,15 +95,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                 ),
               ),
-
               const SizedBox(height: 16),
-
               TextButton(
                 onPressed: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(
-                        builder: (_) => const RegisterScreen()),
+                    MaterialPageRoute(builder: (_) => const RegisterScreen()),
                   );
                 },
                 child: const Text('Create Account'),
