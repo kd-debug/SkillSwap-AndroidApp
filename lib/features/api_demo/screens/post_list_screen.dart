@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import '../../core/services/api_service.dart';
-import '../../features/api_demo/model/post_model.dart';
-import '../../features/api_demo/widgets/post_card.dart';
+import '../../../core/services/api_service.dart';
+import '../model/post_model.dart';
+import '../widgets/post_card.dart';
 
 class PostListScreen extends StatefulWidget {
   const PostListScreen({super.key});

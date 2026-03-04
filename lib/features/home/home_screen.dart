@@ -13,7 +13,8 @@ class HomeScreen extends StatelessWidget {
         title: const Text('SkillSwap'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.api, tooltip: 'API Demo'),
+            icon: const Icon(Icons.api),
+            tooltip: 'API Demo',
             onPressed: () {
               Navigator.push(
                 context,
