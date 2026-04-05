@@ -76,21 +76,60 @@ class UnsplashService {
   }
 
   /// Get image for a skill based on skill name and category
-  /// First tries skill name, then falls back to category
+  /// Uses skill-aware keywords before random fallback for better relevance.
   Future<String?> getSkillImage(String skillName, String category) async {
-    // Try searching by skill name first
-    UnsplashImage? image = await searchPhotos(skillName);
+    final queries = _buildSkillQueries(skillName, category);
+    UnsplashImage? image;
 
-    // If no results, try category
-    if (image == null) {
-      image = await searchPhotos(category);
+    for (final query in queries) {
+      image = await searchPhotos(query);
+      if (image != null) break;
     }
 
-    // If still no results, try random photo with category
-    if (image == null) {
-      image = await getRandomPhoto(category);
-    }
+    image ??= await getRandomPhoto('$skillName $category learning');
 
     return image?.regularUrl;
+  }
+
+  List<String> _buildSkillQueries(String skillName, String category) {
+    final lowerSkill = skillName.toLowerCase();
+    final lowerCategory = category.toLowerCase();
+    final queries = <String>[
+      '$skillName learning',
+      '$skillName tutorial',
+      '$skillName course',
+      '$category education',
+    ];
+
+    if (lowerCategory.contains('language') ||
+        lowerSkill.contains('english') ||
+        lowerSkill.contains('spoken')) {
+      queries.addAll([
+        'english conversation classroom',
+        'language learning speaking practice',
+      ]);
+    }
+    if (lowerCategory.contains('programming') ||
+        lowerSkill.contains('java') ||
+        lowerSkill.contains('code')) {
+      queries.addAll([
+        'programming coding laptop',
+        'software developer coding screen',
+      ]);
+    }
+    if (lowerCategory.contains('design') || lowerSkill.contains('figma')) {
+      queries.addAll([
+        'ui ux design workspace',
+        'graphic design creative desk',
+      ]);
+    }
+    if (lowerCategory.contains('music') || lowerSkill.contains('flute')) {
+      queries.addAll([
+        'flute music lesson',
+        'music practice instrument learning',
+      ]);
+    }
+
+    return queries.toSet().toList();
   }
 }

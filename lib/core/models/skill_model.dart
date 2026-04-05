@@ -8,6 +8,8 @@ class OfferedSkill {
   final String about;
   final List<String> learningPoints;
   final String? imageUrl;
+  final double? latitude;
+  final double? longitude;
 
   OfferedSkill({
     required this.id,
@@ -19,6 +21,8 @@ class OfferedSkill {
     required this.about,
     required this.learningPoints,
     this.imageUrl,
+    this.latitude,
+    this.longitude,
   });
 
   factory OfferedSkill.fromMap(Map<String, dynamic> map, String id) {
@@ -32,6 +36,8 @@ class OfferedSkill {
       about: map['about'] ?? '',
       learningPoints: List<String>.from(map['learningPoints'] ?? []),
       imageUrl: map['imageUrl'],
+      latitude: (map['latitude'] as num?)?.toDouble(),
+      longitude: (map['longitude'] as num?)?.toDouble(),
     );
   }
 
@@ -45,6 +51,8 @@ class OfferedSkill {
       'about': about,
       'learningPoints': learningPoints,
       'imageUrl': imageUrl,
+      'latitude': latitude,
+      'longitude': longitude,
     };
   }
 }
@@ -53,17 +61,21 @@ class WantedSkill {
   final String id;
   final String userId;
   final String name;
+  final String category;
   final String level;
   final String remarks;
   final List<String> otherRelevantSkills;
+  final String? imageUrl;
 
   WantedSkill({
     required this.id,
     required this.userId,
     required this.name,
+    required this.category,
     required this.level,
     required this.remarks,
     required this.otherRelevantSkills,
+    this.imageUrl,
   });
 
   factory WantedSkill.fromMap(Map<String, dynamic> map, String id) {
@@ -71,9 +83,11 @@ class WantedSkill {
       id: id,
       userId: map['userId'] ?? '',
       name: map['name'] ?? '',
+      category: map['category'] ?? '',
       level: map['level'] ?? '',
       remarks: map['remarks'] ?? '',
       otherRelevantSkills: List<String>.from(map['otherRelevantSkills'] ?? []),
+      imageUrl: map['imageUrl'] as String?,
     );
   }
 
@@ -81,9 +95,11 @@ class WantedSkill {
     return {
       'userId': userId,
       'name': name,
+      'category': category,
       'level': level,
       'remarks': remarks,
       'otherRelevantSkills': otherRelevantSkills,
+      'imageUrl': imageUrl,
     };
   }
 }

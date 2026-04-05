@@ -8,9 +8,9 @@ class SkillRequest {
   final String toUserName;
   final String requestedSkillId;
   final String requestedSkillName;
-  final List<String> offeredSkillNames; // Requester's offered skills
-  final String status; // 'pending', 'accepted', 'declined'
-  final String? selectedSkillName; // The skill the owner picks
+  final List<String> offeredSkillNames;
+  final String status;
+  final String? selectedSkillName;
   final DateTime timestamp;
 
   SkillRequest({

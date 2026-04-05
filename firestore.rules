@@ -1,0 +1,85 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isRequestParticipant(fromUserId, toUserId) {
+      return signedIn() &&
+          (request.auth.uid == fromUserId || request.auth.uid == toUserId);
+    }
+
+    match /users/{userId} {
+      allow read, write: if isSelf(userId);
+    }
+
+    match /offeredSkills/{skillId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /wantedSkills/{skillId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /skillRequests/{requestId} {
+      allow read: if signedIn() &&
+          (resource.data.fromUserId == request.auth.uid ||
+              resource.data.toUserId == request.auth.uid);
+
+      allow create: if signedIn() &&
+          request.resource.data.fromUserId == request.auth.uid;
+
+      allow update: if signedIn() &&
+          (resource.data.fromUserId == request.auth.uid ||
+              resource.data.toUserId == request.auth.uid);
+
+      allow delete: if signedIn() &&
+          (resource.data.fromUserId == request.auth.uid ||
+              resource.data.toUserId == request.auth.uid);
+    }
+
+    match /skillChats/{chatId} {
+      allow read: if signedIn() &&
+          (resource.data.fromUserId == request.auth.uid ||
+              resource.data.toUserId == request.auth.uid);
+
+      allow create: if signedIn() &&
+          isRequestParticipant(
+              request.resource.data.fromUserId,
+            request.resource.data.toUserId
+          );
+
+      allow update: if signedIn() &&
+          isRequestParticipant(
+              resource.data.fromUserId,
+            resource.data.toUserId
+          );
+
+      match /messages/{messageId} {
+        allow read: if signedIn() &&
+            isRequestParticipant(
+                get(/databases/$(database)/documents/skillChats/$(chatId)).data.fromUserId,
+            get(/databases/$(database)/documents/skillChats/$(chatId)).data.toUserId
+            );
+
+        allow create: if signedIn() &&
+            request.resource.data.senderId == request.auth.uid &&
+            isRequestParticipant(
+                get(/databases/$(database)/documents/skillChats/$(chatId)).data.fromUserId,
+            get(/databases/$(database)/documents/skillChats/$(chatId)).data.toUserId
+            );
+
+        allow update, delete: if false;
+      }
+    }
+  }
+}

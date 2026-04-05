@@ -6,9 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import '../models/notification_model.dart';
-import 'dart:io' show Platform;
 import 'dart:async';
 
 class NotificationService {
@@ -49,7 +47,7 @@ class NotificationService {
 
     if (!kIsWeb) {
       await _localNotifications.initialize(
-        initSettings,
+        settings: initSettings,
         onDidReceiveNotificationResponse: (NotificationResponse details) {
           // Handle notification tap
           print('Notification tapped: ${details.payload}');
@@ -121,10 +119,10 @@ class NotificationService {
     );
 
     await _localNotifications.show(
-      DateTime.now().millisecond,
-      title,
-      body,
-      details,
+      id: DateTime.now().millisecond,
+      title: title,
+      body: body,
+      notificationDetails: details,
       payload: payload,
     );
   }
@@ -211,11 +209,11 @@ class NotificationService {
     if (kIsWeb) return;
     
     await _localNotifications.zonedSchedule(
-      id,
-      title,
-      body,
-      tz.TZDateTime.from(scheduledDate, tz.local),
-      const NotificationDetails(
+      id: id,
+      title: title,
+      body: body,
+      scheduledDate: tz.TZDateTime.from(scheduledDate, tz.local),
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           'skillswap_reminders',
           'SkillSwap Reminders',
@@ -225,8 +223,6 @@ class NotificationService {
         iOS: DarwinNotificationDetails(),
       ),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
       matchDateTimeComponents: DateTimeComponents.time,
     );
   }

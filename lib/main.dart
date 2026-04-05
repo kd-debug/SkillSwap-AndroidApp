@@ -1,9 +1,17 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:desktop_webview_auth/desktop_webview_auth.dart';
+import 'package:desktop_webview_auth/google.dart' as desktop_google;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
+import 'package:image_picker/image_picker.dart';
 import 'firebase_options.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'core/services/unsplash_service.dart';
@@ -13,6 +21,16 @@ import 'core/models/skill_model.dart';
 import 'core/models/skill_request.dart';
 import 'core/models/notification_model.dart';
 import 'core/services/notification_service.dart';
+import 'core/providers/auth_provider.dart';
+import 'features/skills/add_skill_screen.dart' as add_skill_feature;
+import 'features/skills/my_skills_screen.dart' as skill_feature;
+import 'features/requests/requests_screen.dart' as requests_feature;
+import 'features/map/map_screen.dart';
+import 'features/sensors/sensor_screen.dart';
+import 'features/media/media_screen.dart';
+import 'features/analytics/analytics_screen.dart';
+import 'features/scanner/scanner_screen.dart';
+import 'features/matches/matches_screen.dart' as matches_feature;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,7 +45,7 @@ void main() async {
   // Fetch images for dummy skills from Unsplash
   await fetchImagesForDummySkills();
 
-  runApp(const SkillSwapApp());
+  runApp(const ProviderScope(child: SkillSwapApp()));
 }
 
 // Model class for Skill
@@ -295,11 +313,13 @@ final List<String> categories = [
   'Fitness',
 ];
 
-class SkillSwapApp extends StatelessWidget {
+class SkillSwapApp extends ConsumerWidget {
   const SkillSwapApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final authState = ref.watch(authStateProvider);
+
     return MaterialApp(
       title: 'SkillSwap',
       debugShowCheckedModeBanner: false,
@@ -316,7 +336,20 @@ class SkillSwapApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const LoginScreen(),
+      home: authState.when(
+        data: (user) {
+          if (user != null) {
+            return const MainNavigationScreen();
+          }
+          return const LoginScreen();
+        },
+        loading: () => const Scaffold(
+          body: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, trace) => Scaffold(
+          body: Center(child: Text('Error initializing app: $e')),
+        ),
+      ),
     );
   }
 }
@@ -330,10 +363,21 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  static const String _googleWebClientId =
+      '907241970128-6lk4ul5ia67gj2ruhmn4jg17ok243eaj.apps.googleusercontent.com';
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    clientId: kIsWeb ? _googleWebClientId : null,
+  );
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isLoading = false;
+
+  bool get _isDesktopPlatform =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux ||
+          defaultTargetPlatform == TargetPlatform.macOS);
 
   @override
   void dispose() {
@@ -361,10 +405,49 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       // Sign in with Firebase
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      final userCredential =
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
+
+      final user = userCredential.user;
+      final userDoc = user == null
+          ? null
+          : await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
+      final requiresVerification =
+          (userDoc?.data()?['requireEmailVerification'] ?? false) == true;
+
+      if (user != null && requiresVerification && !user.emailVerified) {
+        await user.sendEmailVerification();
+        await FirebaseAuth.instance.signOut();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Please verify your email first. A verification link was sent again.',
+              ),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (user != null && requiresVerification && user.emailVerified) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+          {
+            'requireEmailVerification': false,
+            'emailVerifiedAt': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      }
 
       // Navigate to home on success
       if (mounted) {
@@ -403,6 +486,125 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('An error occurred: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loginWithGoogle() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      if (kIsWeb) {
+        final googleProvider = GoogleAuthProvider();
+        googleProvider.setCustomParameters({'prompt': 'select_account'});
+        await FirebaseAuth.instance.signInWithPopup(googleProvider);
+
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const MainNavigationScreen(),
+            ),
+          );
+        }
+        return;
+      }
+
+      final AuthCredential credential;
+
+      if (_isDesktopPlatform) {
+        final result = await DesktopWebviewAuth.signIn(
+          _DesktopGoogleSignInArgs(
+            clientId:
+                '907241970128-6lk4ul5ia67gj2ruhmn4jg17ok243eaj.apps.googleusercontent.com',
+            redirectUri:
+                'https://skillswap-90112.firebaseapp.com/__/auth/handler',
+            scope: 'openid email profile',
+          ),
+        );
+
+        if (result == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Google sign-in cancelled'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+
+        credential = GoogleAuthProvider.credential(
+          accessToken: result.accessToken,
+          idToken: result.idToken,
+        );
+      } else {
+        // Force account chooser by clearing previous session on mobile.
+        try {
+          await _googleSignIn.signOut();
+        } catch (_) {}
+
+        final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+        if (googleUser == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Google sign-in cancelled'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+
+        final GoogleSignInAuthentication googleAuth =
+            await googleUser.authentication;
+
+        credential = GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+      }
+
+      await FirebaseAuth.instance.signInWithCredential(credential);
+
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const MainNavigationScreen()),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Google sign-in failed: ${e.message}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        final String message = kIsWeb
+            ? 'Google sign-in failed on web. Ensure Google provider is enabled in Firebase Auth and localhost is an authorized domain.'
+            : _isDesktopPlatform
+                ? 'Google sign-in failed on desktop: $e'
+                : 'Google sign-in failed: $e';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
             backgroundColor: Colors.red,
           ),
         );
@@ -544,6 +746,81 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                   ),
                 ),
+                const SizedBox(height: 16),
+
+                Row(
+                  children: [
+                    Expanded(child: Divider(color: Colors.grey[300])),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: Text(
+                        'or continue with',
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                    ),
+                    Expanded(child: Divider(color: Colors.grey[300])),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: OutlinedButton(
+                    onPressed: _isLoading ? null : _loginWithGoogle,
+                    style: OutlinedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      side: BorderSide(color: Colors.grey.shade300),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          width: 26,
+                          height: 26,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(13),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'G',
+                              style: TextStyle(
+                                color: Color(0xFFDB4437),
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        const Text(
+                          'Sign in with Google',
+                          style: TextStyle(
+                            color: Color(0xFF202124),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_isDesktopPlatform) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    'Google Sign-In is enabled for this desktop build.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 24),
 
                 // Register Link
@@ -643,20 +920,37 @@ class _RegisterScreenState extends State<RegisterScreen> {
       // Update display name
       await userCredential.user?.updateDisplayName(_nameController.text.trim());
 
-      // Navigate to home on success
+      final user = userCredential.user;
+      if (user != null) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+          {
+            'uid': user.uid,
+            'name': _nameController.text.trim(),
+            'email': _emailController.text.trim(),
+            'requireEmailVerification': true,
+            'verificationRequiredSince': FieldValue.serverTimestamp(),
+            'authProvider': 'password',
+          },
+          SetOptions(merge: true),
+        );
+      }
+
+      // Send verification email and force verification before first login.
+      await userCredential.user?.sendEmailVerification();
+      await FirebaseAuth.instance.signOut();
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Account created successfully!'),
+            content: Text(
+              'Verification email sent. Please verify your email, then login.',
+            ),
             backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
+            duration: Duration(seconds: 4),
           ),
         );
 
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const MainNavigationScreen()),
-        );
+        Navigator.pop(context);
       }
     } on FirebaseAuthException catch (e) {
       String message;
@@ -874,6 +1168,38 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 }
 
+class _DesktopGoogleSignInArgs extends ProviderArgs {
+  _DesktopGoogleSignInArgs({
+    required this.clientId,
+    required this.redirectUri,
+    this.scope = 'openid email profile',
+  });
+
+  final String clientId;
+  final String scope;
+
+  @override
+  final String redirectUri;
+
+  @override
+  String get host => 'accounts.google.com';
+
+  @override
+  String get path => '/o/oauth2/v2/auth';
+
+  @override
+  Map<String, String> buildQueryParameters() {
+    return {
+      'client_id': clientId,
+      'scope': scope,
+      'response_type': 'token id_token',
+      'redirect_uri': redirectUri,
+      'prompt': 'select_account',
+      'nonce': DateTime.now().microsecondsSinceEpoch.toString(),
+    };
+  }
+}
+
 // Main Navigation Screen with Bottom Nav Bar
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -884,74 +1210,22 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _currentIndex = 0;
-  StreamSubscription? _notificationSubscription;
 
   @override
   void initState() {
     super.initState();
-    // Start matchmaking listener for current user
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      NotificationService().startMatchmakingListener(user.uid);
-    }
-
-    // Listen for in-app notifications (for Web/Desktop feedback)
-    _notificationSubscription = NotificationService().onNotificationReceived.listen((data) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.notifications_active, color: Colors.white, size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        data['title'] ?? '',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ],
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(left: 26),
-                  child: Text(data['body'] ?? ''),
-                ),
-              ],
-            ),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: Colors.teal.shade700,
-            duration: const Duration(seconds: 5),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            action: SnackBarAction(
-              label: 'VIEW',
-              textColor: Colors.white,
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const NotificationsScreen()),
-                );
-              },
-            ),
-          ),
-        );
-      }
-    });
   }
 
   @override
   void dispose() {
-    _notificationSubscription?.cancel();
     super.dispose();
   }
 
   final List<Widget> _screens = [
     const DiscoverScreen(),
-    const MySkillsScreen(),
-    const RequestsScreen(), // New
+    const skill_feature.MySkillsScreen(),
+    const requests_feature.RequestsScreen(),
+    const matches_feature.MatchesScreen(),
     const ProfileScreen(),
   ];
 
@@ -983,288 +1257,15 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
             label: 'Requests',
           ),
           NavigationDestination(
+            icon: Icon(Icons.people_alt_outlined),
+            selectedIcon: Icon(Icons.people_alt),
+            label: 'Recommendations',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.person_outline),
             selectedIcon: Icon(Icons.person),
             label: 'Profile',
           ),
-        ],
-      ),
-    );
-  }
-}
-
-
-// --- Requests Screen ---
-class RequestsScreen extends StatefulWidget {
-  const RequestsScreen({super.key});
-
-  @override
-  State<RequestsScreen> createState() => _RequestsScreenState();
-}
-
-class _RequestsScreenState extends State<RequestsScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-  final FirestoreService _firestoreService = FirestoreService();
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Skill Requests', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: Colors.teal,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.notifications_none),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const NotificationsScreen()),
-              );
-            },
-          ),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: Colors.teal,
-          unselectedLabelColor: Colors.grey,
-          indicatorColor: Colors.teal,
-          tabs: const [
-            Tab(text: 'Received'),
-            Tab(text: 'Sent'),
-          ],
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildReceivedRequestsList(),
-          _buildSentRequestsList(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildReceivedRequestsList() {
-    return StreamBuilder<List<SkillRequest>>(
-      stream: _firestoreService.getReceivedRequests(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return _buildEmptyState('Error loading requests: ${snapshot.error}', Icons.error_outline);
-        }
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return _buildEmptyState('No requests received yet', Icons.inbox_outlined);
-        }
-
-        final requests = snapshot.data!;
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: requests.length,
-          itemBuilder: (context, index) {
-            final request = requests[index];
-            return RequestCard(request: request, isReceived: true);
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildSentRequestsList() {
-    return StreamBuilder<List<SkillRequest>>(
-      stream: _firestoreService.getSentRequests(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return _buildEmptyState('Error loading requests: ${snapshot.error}', Icons.error_outline);
-        }
-        if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return _buildEmptyState('You haven\'t sent any requests', Icons.send_outlined);
-        }
-
-        final requests = snapshot.data!;
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: requests.length,
-          itemBuilder: (context, index) {
-            final request = requests[index];
-            return RequestCard(request: request, isReceived: false);
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildEmptyState(String message, IconData icon) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 80, color: Colors.grey[200]),
-          const SizedBox(height: 16),
-          Text(message, style: TextStyle(fontSize: 18, color: Colors.grey[400], fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
-  }
-}
-
-// --- Request Card Component ---
-class RequestCard extends StatelessWidget {
-  final SkillRequest request;
-  final bool isReceived;
-
-  const RequestCard({super.key, required this.request, required this.isReceived});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-             Row(
-               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-               children: [
-                 Expanded(
-                   child: Column(
-                     crossAxisAlignment: CrossAxisAlignment.start,
-                     children: [
-                       Text(
-                         isReceived 
-                           ? '${request.fromUserName} wants to learn'
-                           : 'You requested to learn',
-                         style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                       ),
-                       Text(
-                         request.requestedSkillName,
-                         style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal),
-                       ),
-                     ],
-                   ),
-                 ),
-                 _buildStatusBadge(request.status),
-               ],
-             ),
-             const Divider(height: 24),
-             if (isReceived && request.status == 'pending') ...[
-               Text(
-                 'In return, they offer to teach you:',
-                 style: TextStyle(color: Colors.grey[600], fontSize: 13),
-               ),
-               const SizedBox(height: 8),
-               Wrap(
-                 spacing: 8,
-                 children: request.offeredSkillNames.map((skill) => Chip(
-                   label: Text(skill, style: const TextStyle(fontSize: 12)),
-                   backgroundColor: Colors.teal.shade50,
-                   side: BorderSide.none,
-                 )).toList(),
-               ),
-               const SizedBox(height: 16),
-               Row(
-                 children: [
-                   Expanded(
-                     child: OutlinedButton(
-                       onPressed: () => _declineRequest(context),
-                       style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-                       child: const Text('Decline'),
-                     ),
-                   ),
-                   const SizedBox(width: 12),
-                   Expanded(
-                     child: ElevatedButton(
-                       onPressed: () => _showAcceptDialog(context),
-                       style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
-                       child: const Text('Accept'),
-                     ),
-                   ),
-                 ],
-               ),
-             ] else if (request.status == 'accepted') ...[
-                Text(
-                  isReceived 
-                    ? 'You chose to learn: ${request.selectedSkillName}'
-                    : 'They chose to learn: ${request.selectedSkillName}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
-                ),
-             ] else ...[
-               Text(
-                 isReceived ? 'From: ${request.fromUserName}' : 'To: ${request.toUserName}',
-                 style: TextStyle(color: Colors.grey[600]),
-               ),
-             ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatusBadge(String status) {
-    Color color = Colors.orange;
-    if (status == 'accepted') color = Colors.green;
-    if (status == 'declined') color = Colors.red;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.5)),
-      ),
-      child: Text(
-        status.toUpperCase(),
-        style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-
-  void _declineRequest(BuildContext context) {
-    FirestoreService().respondToRequest(request.id, 'declined');
-  }
-
-  void _showAcceptDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Accept Request'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Which skill would you like to learn from them in return?'),
-            const SizedBox(height: 16),
-            ...request.offeredSkillNames.map((skill) => ListTile(
-              title: Text(skill),
-              onTap: () {
-                FirestoreService().respondToRequest(request.id, 'accepted', selectedSkillName: skill);
-                Navigator.pop(context);
-              },
-              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            )).toList(),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
         ],
       ),
     );
@@ -1287,65 +1288,94 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   Widget build(BuildContext context) {
     return StreamBuilder<List<OfferedSkill>>(
       stream: _firestoreService.getAllOfferedSkills(),
-      builder: (context, snapshot) {
-        List<Skill> allSkills = [];
-        if (snapshot.hasData) {
-          allSkills = snapshot.data!.map((s) => Skill.fromOffered(s)).toList();
-        }
-        
-        final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      builder: (context, offeredSnapshot) {
+        return StreamBuilder<List<SkillRequest>>(
+          stream: _firestoreService.getSentRequests(),
+          builder: (context, sentSnapshot) {
+            return StreamBuilder<List<SkillRequest>>(
+              stream: _firestoreService.getReceivedRequests(),
+              builder: (context, receivedSnapshot) {
+                List<Skill> allSkills = [];
+                if (offeredSnapshot.hasData) {
+                  allSkills = offeredSnapshot.data!
+                      .map((s) => Skill.fromOffered(s))
+                      .toList();
+                }
 
-        // Filter out current user's skills
-        final discoverySkills = allSkills.where((s) => s.userId != currentUserId).toList();
-        
-        // Merge with dummy skills if you want, or just use real ones
-        // For now, let's just use real ones as requested
-        final filteredSkills = selectedCategory == 'All' 
-            ? discoverySkills 
-            : discoverySkills.where((s) => s.category == selectedCategory).toList();
-            
-        final trendingSkills = discoverySkills.where((s) => s.skillLevel == 'Advanced').toList();
+                final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+                final acceptedRequestedSkillIds = (sentSnapshot.data ?? [])
+                    .where((r) => r.status == 'accepted')
+                    .map((r) => r.requestedSkillId)
+                    .toSet();
+                final acceptedSelectedPairs = (receivedSnapshot.data ?? [])
+                    .where((r) =>
+                        r.status == 'accepted' &&
+                        r.selectedSkillName != null &&
+                        r.selectedSkillName!.trim().isNotEmpty)
+                    .map((r) =>
+                        '${r.fromUserId}|${r.selectedSkillName!.trim().toLowerCase()}')
+                    .toSet();
 
-        return Scaffold(
-          backgroundColor: Colors.grey[50],
-          appBar: AppBar(
-            title: const Text(
-              'SkillSwap',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24),
-            ),
-            backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.notifications_none),
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const NotificationsScreen()),
-                  );
-                },
-              ),
-              IconButton(icon: const Icon(Icons.search), onPressed: () {}),
-            ],
-          ),
-          body: snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData
-              ? const Center(child: CircularProgressIndicator())
-              : allSkills.isEmpty
-                  ? _buildEmptyDiscovery()
-                  : SingleChildScrollView(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildCategorySection(),
-                          const SizedBox(height: 24),
-                          if (trendingSkills.isNotEmpty) ...[
-                            _buildTrendingSection(trendingSkills),
-                            const SizedBox(height: 24),
-                          ],
-                          _buildAllSkillsSection(filteredSkills),
-                          const SizedBox(height: 16),
-                        ],
-                      ),
+                // Filter out current user's skills
+                final discoverySkills = allSkills
+                    .where((s) => s.userId != currentUserId)
+                    .where((s) => !acceptedRequestedSkillIds.contains(s.id))
+                    .where((s) => !acceptedSelectedPairs
+                        .contains('${s.userId}|${s.name.trim().toLowerCase()}'))
+                    .toList();
+
+                // Merge with dummy skills if you want, or just use real ones
+                // For now, let's just use real ones as requested
+                final filteredSkills = selectedCategory == 'All'
+                    ? discoverySkills
+                    : discoverySkills
+                        .where((s) => s.category == selectedCategory)
+                        .toList();
+
+                final trendingSkills = discoverySkills
+                    .where((s) => s.skillLevel == 'Advanced')
+                    .toList();
+
+                return Scaffold(
+                  backgroundColor: Colors.grey[50],
+                  appBar: AppBar(
+                    title: const Text(
+                      'SkillSwap',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 24),
                     ),
+                    backgroundColor:
+                        Theme.of(context).colorScheme.inversePrimary,
+                    actions: [
+                      IconButton(
+                          icon: const Icon(Icons.search), onPressed: () {}),
+                    ],
+                  ),
+                  body: offeredSnapshot.connectionState ==
+                              ConnectionState.waiting &&
+                          !offeredSnapshot.hasData
+                      ? const Center(child: CircularProgressIndicator())
+                      : allSkills.isEmpty
+                          ? _buildEmptyDiscovery()
+                          : SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _buildCategorySection(),
+                                  const SizedBox(height: 24),
+                                  if (trendingSkills.isNotEmpty) ...[
+                                    _buildTrendingSection(trendingSkills),
+                                    const SizedBox(height: 24),
+                                  ],
+                                  _buildAllSkillsSection(filteredSkills),
+                                  const SizedBox(height: 16),
+                                ],
+                              ),
+                            ),
+                );
+              },
+            );
+          },
         );
       },
     );
@@ -1358,9 +1388,14 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         children: [
           Icon(Icons.explore_outlined, size: 80, color: Colors.grey[300]),
           const SizedBox(height: 16),
-          const Text('No skills found', style: TextStyle(fontSize: 18, color: Colors.grey, fontWeight: FontWeight.bold)),
+          const Text('No skills found',
+              style: TextStyle(
+                  fontSize: 18,
+                  color: Colors.grey,
+                  fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          const Text('Be the first to offer a skill!', style: TextStyle(color: Colors.grey)),
+          const Text('Be the first to offer a skill!',
+              style: TextStyle(color: Colors.grey)),
         ],
       ),
     );
@@ -1741,7 +1776,7 @@ class TrendingSkillCard extends StatelessWidget {
   }
 }
 
-// Modern Skill Card (Vertical)
+// Modern Skill Card (Vertical) — with inline Request button
 class ModernSkillCard extends StatelessWidget {
   final Skill skill;
 
@@ -1758,166 +1793,6 @@ class ModernSkillCard extends StatelessWidget {
       default:
         return Colors.grey;
     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: InkWell(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => SkillDetailScreen(skill: skill),
-            ),
-          );
-        },
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Image/Icon Section
-              if (skill.imageUrl != null)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: CachedNetworkImage(
-                    imageUrl: skill.imageUrl!,
-                    width: 60,
-                    height: 60,
-                    fit: BoxFit.cover,
-                    placeholder: (context, url) => Shimmer.fromColors(
-                      baseColor: Colors.grey[300]!,
-                      highlightColor: Colors.grey[100]!,
-                      child: Container(
-                        width: 60,
-                        height: 60,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                    errorWidget: (context, url, error) => Container(
-                      width: 60,
-                      height: 60,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(
-                        _getCategoryIcon(skill.category),
-                        size: 30,
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
-                      ),
-                    ),
-                  ),
-                )
-              else
-                // Fallback icon if no image URL
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    _getCategoryIcon(skill.category),
-                    size: 30,
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
-                ),
-              const SizedBox(width: 16),
-
-              // Content Section
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      skill.name,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.category_outlined,
-                          size: 14,
-                          color: Colors.grey[600],
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          skill.category,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.person_outline,
-                          size: 14,
-                          color: Colors.grey[600],
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          skill.userName,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _getSkillLevelColor(
-                          skill.skillLevel,
-                        ).withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: _getSkillLevelColor(skill.skillLevel),
-                          width: 1,
-                        ),
-                      ),
-                      child: Text(
-                        skill.skillLevel,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: _getSkillLevelColor(skill.skillLevel),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Arrow Icon
-              Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey[400]),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   IconData _getCategoryIcon(String category) {
@@ -1939,6 +1814,280 @@ class ModernSkillCard extends StatelessWidget {
       default:
         return Icons.school;
     }
+  }
+
+  Future<void> _sendRequest(BuildContext context) async {
+    final self = FirebaseAuth.instance.currentUser;
+    if (self == null) return;
+    if (self.uid == skill.userId) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content:
+                Text('This is your own skill. Use Edit/Delete from My Skills.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    final firestore = FirestoreService();
+    final profile = await firestore.getUserProfile();
+    final mySkills = await firestore.getMyOfferedSkills().first;
+    final skillsToOffer = mySkills
+        .where((s) => s.name.trim().toLowerCase() != skill.name.toLowerCase())
+        .toList();
+
+    if (!context.mounted) return;
+
+    if (skillsToOffer.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Add at least one different offered skill before requesting this swap.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Request Skill Swap'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('You want to learn: ${skill.name}'),
+            const SizedBox(height: 12),
+            const Text('You will offer:',
+                style: TextStyle(color: Colors.grey, fontSize: 13)),
+            const SizedBox(height: 6),
+            ...skillsToOffer.map((s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(children: [
+                    const Icon(Icons.check_circle,
+                        color: Colors.teal, size: 16),
+                    const SizedBox(width: 6),
+                    Text(s.name,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ]),
+                )),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.teal, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Send Request'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && context.mounted) {
+      final request = SkillRequest(
+        id: '',
+        fromUserId: self.uid,
+        fromUserName: profile?.name ?? self.displayName ?? 'Anonymous',
+        toUserId: skill.userId,
+        toUserName: skill.userName,
+        requestedSkillId: skill.id,
+        requestedSkillName: skill.name,
+        offeredSkillNames: skillsToOffer.map((s) => s.name).toList(),
+        timestamp: DateTime.now(),
+      );
+      await FirestoreService().sendSkillRequest(request);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Swap request sent! ✅'),
+              backgroundColor: Colors.teal),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            InkWell(
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SkillDetailScreen(skill: skill),
+                  )),
+              borderRadius: BorderRadius.circular(12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Icon / Image
+                  if (skill.imageUrl != null)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: CachedNetworkImage(
+                        imageUrl: skill.imageUrl!,
+                        width: 60,
+                        height: 60,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) => Shimmer.fromColors(
+                          baseColor: Colors.grey[300]!,
+                          highlightColor: Colors.grey[100]!,
+                          child: Container(
+                              width: 60,
+                              height: 60,
+                              decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(12))),
+                        ),
+                        errorWidget: (_, __, ___) => Container(
+                          width: 60,
+                          height: 60,
+                          decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer,
+                              borderRadius: BorderRadius.circular(12)),
+                          child: Icon(_getCategoryIcon(skill.category),
+                              size: 30,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onPrimaryContainer),
+                        ),
+                      ),
+                    )
+                  else
+                    Container(
+                      width: 60,
+                      height: 60,
+                      decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primaryContainer,
+                          borderRadius: BorderRadius.circular(12)),
+                      child: Icon(_getCategoryIcon(skill.category),
+                          size: 30,
+                          color:
+                              Theme.of(context).colorScheme.onPrimaryContainer),
+                    ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(skill.name,
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 4),
+                        Text('${skill.category}  ·  ${skill.userName}',
+                            style: TextStyle(
+                                fontSize: 13, color: Colors.grey[600])),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _getSkillLevelColor(skill.skillLevel)
+                                .withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: _getSkillLevelColor(skill.skillLevel),
+                                width: 1),
+                          ),
+                          child: Text(skill.skillLevel,
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color:
+                                      _getSkillLevelColor(skill.skillLevel))),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // Live request status button
+            StreamBuilder<SkillRequest?>(
+              stream: FirestoreService().getRequestForSkill(skill.id),
+              builder: (context, snapshot) {
+                final req = snapshot.data;
+                if (req?.status == 'accepted') {
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                        color: Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.green)),
+                    child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.check_circle,
+                              color: Colors.green, size: 18),
+                          SizedBox(width: 6),
+                          Text('Swap Accepted',
+                              style: TextStyle(
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.bold)),
+                        ]),
+                  );
+                }
+                if (req?.status == 'pending') {
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.orange)),
+                    child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.hourglass_empty,
+                              color: Colors.orange, size: 18),
+                          SizedBox(width: 6),
+                          Text('Request Pending',
+                              style: TextStyle(
+                                  color: Colors.orange,
+                                  fontWeight: FontWeight.bold)),
+                        ]),
+                  );
+                }
+                return SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () => _sendRequest(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.teal,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    icon: const Icon(Icons.swap_horiz, size: 18),
+                    label: const Text('Request Swap',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1995,6 +2144,65 @@ class SkillDetailScreen extends StatelessWidget {
     }
   }
 
+  bool _isOwnSkill() {
+    return FirebaseAuth.instance.currentUser?.uid == skill.userId;
+  }
+
+  OfferedSkill _toOfferedSkill() {
+    return OfferedSkill(
+      id: skill.id,
+      userId: skill.userId,
+      userName: skill.userName,
+      name: skill.name,
+      category: skill.category,
+      level: skill.skillLevel,
+      about: skill.description,
+      learningPoints: skill.learningPoints,
+      imageUrl: skill.imageUrl,
+    );
+  }
+
+  Future<void> _deleteOwnSkill(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Skill'),
+        content: Text('Delete "${skill.name}" from your offered skills?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    await FirestoreService().deleteOfferedSkill(skill.id);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Skill deleted'), backgroundColor: Colors.teal),
+      );
+      Navigator.pop(context);
+    }
+  }
+
+  Future<void> _editOwnSkill(BuildContext context) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => add_skill_feature.AddSkillScreen(
+          isOffered: true,
+          initialOfferedSkill: _toOfferedSkill(),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2038,7 +2246,9 @@ class SkillDetailScreen extends StatelessWidget {
                               gradient: LinearGradient(
                                 colors: [
                                   Theme.of(context).colorScheme.primary,
-                                  Theme.of(context).colorScheme.primaryContainer,
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .primaryContainer,
                                 ],
                                 begin: Alignment.topLeft,
                                 end: Alignment.bottomRight,
@@ -2338,99 +2548,172 @@ class SkillDetailScreen extends StatelessWidget {
 
       // Fixed Bottom Action Bar
       bottomNavigationBar: StreamBuilder<SkillRequest?>(
-        stream: FirestoreService().getRequestForSkill(skill.id),
-        builder: (context, snapshot) {
-          final request = snapshot.data;
-          final isPending = request?.status == 'pending';
-          final isAccepted = request?.status == 'accepted';
-          final isDeclined = request?.status == 'declined';
-          
-          Color? buttonColor = Theme.of(context).colorScheme.primary;
-          String buttonText = 'Request Swap';
-          IconData buttonIcon = Icons.swap_horiz;
-          bool isEnabled = true;
+          stream: FirestoreService().getRequestForSkill(skill.id),
+          builder: (context, snapshot) {
+            final isOwner = _isOwnSkill();
+            final request = snapshot.data;
+            final isPending = request?.status == 'pending';
+            final isAccepted = request?.status == 'accepted';
+            final isDeclined = request?.status == 'declined';
 
-          if (isPending) {
-            buttonColor = Colors.orange;
-            buttonText = 'Request Pending';
-            buttonIcon = Icons.hourglass_empty;
-            isEnabled = false;
-          } else if (isAccepted) {
-            buttonColor = Colors.green;
-            buttonText = 'Swap Accepted';
-            buttonIcon = Icons.check_circle_outline;
-            isEnabled = false;
-          } else if (isDeclined) {
-             // If declined, allow them to request again or just show it? 
-             // Let's just allow re-request for now.
-          }
-
-          return Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset: const Offset(0, -5),
-                ),
-              ],
-            ),
-            child: SafeArea(
-              child: SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: ElevatedButton(
-                  onPressed: isEnabled ? () => _showRequestConfirmation(context) : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: buttonColor,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: buttonColor.withOpacity(0.7),
-                    disabledForegroundColor: Colors.white,
-                    elevation: 2,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+            if (isOwner) {
+              return Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, -5),
                     ),
-                  ),
+                  ],
+                ),
+                child: SafeArea(
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(buttonIcon, size: 20),
-                      const SizedBox(width: 8),
-                      Text(
-                        buttonText,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _deleteOwnSkill(context),
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Delete'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red,
+                            side: BorderSide(color: Colors.red.shade300),
+                            minimumSize: const Size.fromHeight(52),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _editOwnSkill(context),
+                          icon: const Icon(Icons.edit_outlined),
+                          label: const Text('Edit'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.teal,
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size.fromHeight(52),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                   ),
                 ),
+              );
+            }
+
+            Color? buttonColor = Theme.of(context).colorScheme.primary;
+            String buttonText = 'Request Swap';
+            IconData buttonIcon = Icons.swap_horiz;
+            bool isEnabled = true;
+
+            if (isPending) {
+              buttonColor = Colors.orange;
+              buttonText = 'Request Pending';
+              buttonIcon = Icons.hourglass_empty;
+              isEnabled = false;
+            } else if (isAccepted) {
+              buttonColor = Colors.green;
+              buttonText = 'Swap Accepted';
+              buttonIcon = Icons.check_circle_outline;
+              isEnabled = false;
+            } else if (isDeclined) {
+              // If declined, allow them to request again or just show it?
+              // Let's just allow re-request for now.
+            }
+
+            return Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, -5),
+                  ),
+                ],
               ),
-            ),
-          );
-        }
-      ),
+              child: SafeArea(
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton(
+                    onPressed: isEnabled
+                        ? () => _showRequestConfirmation(context)
+                        : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: buttonColor,
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: buttonColor.withOpacity(0.7),
+                      disabledForegroundColor: Colors.white,
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(buttonIcon, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          buttonText,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }),
     );
   }
 
   void _showRequestConfirmation(BuildContext context) async {
     final self = FirebaseAuth.instance.currentUser;
     if (self == null) return;
+    if (self.uid == skill.userId) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('This is your own skill. Use Edit/Delete instead.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
 
     // Fetch our own skills to offer
     final firestore = FirestoreService();
     final profile = await firestore.getUserProfile();
     final mySkills = await firestore.getMyOfferedSkills().first;
+    final skillsToOffer = mySkills
+        .where((s) => s.name.trim().toLowerCase() != skill.name.toLowerCase())
+        .toList();
 
-    if (mySkills.isEmpty) {
+    if (skillsToOffer.isEmpty) {
       if (context.mounted) {
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
             title: const Text('No Skills to Offer'),
-            content: const Text('You need to add at least one skill to your "My Skills" section before you can request a swap.'),
+            content: const Text(
+                'Add at least one different offered skill before requesting this swap.'),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+              TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK')),
             ],
           ),
         );
@@ -2451,27 +2734,32 @@ class SkillDetailScreen extends StatelessWidget {
               const SizedBox(height: 16),
               const Text('In return, we will offer your current skills:'),
               const SizedBox(height: 8),
-              ...mySkills.map((s) => Text('• ${s.name}', style: const TextStyle(fontWeight: FontWeight.bold))),
+              ...skillsToOffer.map((s) => Text('• ${s.name}',
+                  style: const TextStyle(fontWeight: FontWeight.bold))),
               const SizedBox(height: 16),
-              const Text('The owner can choose one of these to learn from you.'),
+              const Text(
+                  'The owner can choose one of these to learn from you.'),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () async {
                 final request = SkillRequest(
                   id: '',
                   fromUserId: self.uid,
-                  fromUserName: profile?.name ?? self.displayName ?? 'Anonymous',
+                  fromUserName:
+                      profile?.name ?? self.displayName ?? 'Anonymous',
                   toUserId: skill.userId,
                   toUserName: skill.userName,
                   requestedSkillId: skill.id,
                   requestedSkillName: skill.name,
-                  offeredSkillNames: mySkills.map((s) => s.name).toList(),
+                  offeredSkillNames: skillsToOffer.map((s) => s.name).toList(),
                   timestamp: DateTime.now(),
                 );
-                
+
                 await firestore.sendSkillRequest(request);
                 if (context.mounted) {
                   Navigator.pop(context);
@@ -2485,12 +2773,14 @@ class SkillDetailScreen extends StatelessWidget {
                   // Trigger Local Notification for CRUD event
                   await NotificationService().showLocalNotification(
                     title: 'Swap Request Sent',
-                    body: 'You successfully requested to swap for ${skill.name}.',
+                    body:
+                        'You successfully requested to swap for ${skill.name}.',
                     payload: 'sent_requests',
                   );
                 }
               },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.teal, foregroundColor: Colors.white),
               child: const Text('Send Request'),
             ),
           ],
@@ -2558,7 +2848,8 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
       child: Scaffold(
         backgroundColor: Colors.grey[50],
         appBar: AppBar(
-          title: const Text('My Skills', style: TextStyle(fontWeight: FontWeight.bold)),
+          title: const Text('My Skills',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           backgroundColor: Colors.white,
           elevation: 0,
           foregroundColor: Colors.teal,
@@ -2568,7 +2859,8 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const NotificationsScreen()),
+                  MaterialPageRoute(
+                      builder: (context) => const NotificationsScreen()),
                 );
               },
             ),
@@ -2596,7 +2888,9 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
           },
           backgroundColor: Colors.teal,
           icon: const Icon(Icons.add, color: Colors.white),
-          label: const Text('Add Skill', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          label: const Text('Add Skill',
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         ),
       ),
     );
@@ -2605,13 +2899,15 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
   void _showAddSkillOptions(BuildContext context) {
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (context) => Container(
         padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('What would you like to add?', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Text('What would you like to add?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
             _buildOptionItem(
               icon: Icons.school,
@@ -2619,7 +2915,11 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
               subtitle: 'Share your expertise with others',
               onTap: () {
                 Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (context) => const AddSkillScreen(isOffered: true)));
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) =>
+                            const AddSkillScreen(isOffered: true)));
               },
             ),
             const SizedBox(height: 12),
@@ -2629,7 +2929,11 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
               subtitle: 'Find someone to teach you something new',
               onTap: () {
                 Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (context) => const AddSkillScreen(isOffered: false)));
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) =>
+                            const AddSkillScreen(isOffered: false)));
               },
             ),
           ],
@@ -2638,12 +2942,17 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
     );
   }
 
-  Widget _buildOptionItem({required IconData icon, required String title, required String subtitle, required VoidCallback onTap}) {
+  Widget _buildOptionItem(
+      {required IconData icon,
+      required String title,
+      required String subtitle,
+      required VoidCallback onTap}) {
     return ListTile(
       onTap: onTap,
       leading: Container(
         padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(color: Colors.teal.shade50, shape: BoxShape.circle),
+        decoration:
+            BoxDecoration(color: Colors.teal.shade50, shape: BoxShape.circle),
         child: Icon(icon, color: Colors.teal),
       ),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -2660,7 +2969,8 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
           return const Center(child: CircularProgressIndicator());
         }
         if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return _buildEmptyState('No skills offered yet', Icons.school_outlined);
+          return _buildEmptyState(
+              'No skills offered yet', Icons.school_outlined);
         }
 
         return ListView.builder(
@@ -2670,14 +2980,17 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
             final skill = snapshot.data![index];
             return Card(
               margin: const EdgeInsets.only(bottom: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
               clipBehavior: Clip.antiAlias,
               child: ListTile(
                 contentPadding: const EdgeInsets.all(12),
                 leading: Container(
                   width: 50,
                   height: 50,
-                  decoration: BoxDecoration(color: Colors.teal.shade100, borderRadius: BorderRadius.circular(8)),
+                  decoration: BoxDecoration(
+                      color: Colors.teal.shade100,
+                      borderRadius: BorderRadius.circular(8)),
                   child: skill.imageUrl != null
                       ? ClipRRect(
                           borderRadius: BorderRadius.circular(8),
@@ -2689,12 +3002,14 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
                               highlightColor: Colors.grey[100]!,
                               child: Container(color: Colors.white),
                             ),
-                            errorWidget: (context, url, error) => const Icon(Icons.code, color: Colors.teal),
+                            errorWidget: (context, url, error) =>
+                                const Icon(Icons.code, color: Colors.teal),
                           ),
                         )
                       : const Icon(Icons.code, color: Colors.teal),
                 ),
-                title: Text(skill.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                title: Text(skill.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
                 subtitle: Text('${skill.category} • ${skill.level}'),
                 trailing: PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert),
@@ -2743,16 +3058,21 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
             final skill = snapshot.data![index];
             return Card(
               margin: const EdgeInsets.only(bottom: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
               child: ListTile(
                 contentPadding: const EdgeInsets.all(12),
                 leading: Container(
                   width: 50,
                   height: 50,
-                  decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(8)),
-                  child: const Icon(Icons.lightbulb_outline, color: Colors.orange),
+                  decoration: BoxDecoration(
+                      color: Colors.orange.shade100,
+                      borderRadius: BorderRadius.circular(8)),
+                  child:
+                      const Icon(Icons.lightbulb_outline, color: Colors.orange),
                 ),
-                title: Text(skill.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                title: Text(skill.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
                 subtitle: Text('Level: ${skill.level}'),
                 trailing: PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert),
@@ -2790,7 +3110,11 @@ class _MySkillsScreenState extends State<MySkillsScreen> {
         children: [
           Icon(icon, size: 80, color: Colors.grey[300]),
           const SizedBox(height: 16),
-          Text(message, style: TextStyle(fontSize: 18, color: Colors.grey[400], fontWeight: FontWeight.bold)),
+          Text(message,
+              style: TextStyle(
+                  fontSize: 18,
+                  color: Colors.grey[400],
+                  fontWeight: FontWeight.bold)),
         ],
       ),
     );
@@ -2807,51 +3131,136 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final FirestoreService _firestoreService = FirestoreService();
   final _formKey = GlobalKey<FormState>();
-  
+
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
   final _bioController = TextEditingController();
   final _interestsController = TextEditingController();
-  
+  StreamSubscription<UserProfile?>? _profileSubscription;
+
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _isUploadingImage = false;
+  String? _profileImageUrl;
+  String? _profileImagePath;
+  Uint8List? _profileImageBytes;
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
+    _listenToProfile();
   }
 
-  Future<void> _loadProfile() async {
-    try {
-      final profile = await _firestoreService.getUserProfile();
-      if (profile != null) {
-        setState(() {
+  void _listenToProfile() {
+    _profileSubscription =
+        _firestoreService.getUserProfileStream().listen((profile) {
+      if (!mounted) return;
+
+      final user = FirebaseAuth.instance.currentUser;
+      setState(() {
+        if (profile != null && !_isSaving) {
           _nameController.text = profile.name;
-          _emailController.text = profile.email;
+          _emailController.text =
+              profile.email.isNotEmpty ? profile.email : (user?.email ?? '');
           _phoneController.text = profile.phone;
           _bioController.text = profile.bio;
           _interestsController.text = profile.interests.join(', ');
-          _isLoading = false;
-        });
-      } else {
-        // Fallback to Firebase Auth info if profile doesn't exist yet
-        final user = FirebaseAuth.instance.currentUser;
-        if (user != null) {
-          setState(() {
-            _nameController.text = user.displayName ?? '';
-            _emailController.text = user.email ?? '';
-            _isLoading = false;
-          });
+          _profileImageUrl = profile.profileImageUrl;
+          _profileImagePath = profile.profileImagePath;
+          _profileImageBytes = null;
+        } else if (profile == null &&
+            user != null &&
+            _nameController.text.isEmpty) {
+          _nameController.text = user.displayName ?? '';
+          _emailController.text = user.email ?? '';
         }
+        _isLoading = false;
+      });
+
+      if (profile?.profileImagePath != null &&
+          profile!.profileImagePath!.isNotEmpty) {
+        _loadProfileImageBytes(profile.profileImagePath!);
+      }
+    }, onError: (error) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('Error loading profile: $error'),
+            backgroundColor: Colors.red),
+      );
+    });
+  }
+
+  Future<void> _loadProfileImageBytes(String imagePath) async {
+    try {
+      final bytes = await FirebaseStorage.instance
+          .ref(imagePath)
+          .getData(4 * 1024 * 1024);
+      if (!mounted) return;
+      if (_profileImagePath != imagePath) return;
+      setState(() => _profileImageBytes = bytes);
+    } catch (_) {
+      // Keep UI fallback on legacy URL/avatar initials if path read fails.
+    }
+  }
+
+  Future<void> _pickProfileImage() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final picked = await ImagePicker()
+          .pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 45,
+        maxWidth: 1024,
+        maxHeight: 1024,
+      );
+      if (picked == null) return;
+
+      setState(() => _isUploadingImage = true);
+      final bytes = await picked.readAsBytes();
+
+      final storagePath = 'profile_images/${user.uid}/avatar.jpg';
+      final ref = FirebaseStorage.instance.ref().child(storagePath);
+      await ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
+
+      await _firestoreService.updateProfileImagePath(storagePath);
+
+      if (mounted) {
+        setState(() {
+          _profileImagePath = storagePath;
+          _profileImageUrl = null;
+          _profileImageBytes = bytes;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text('Profile picture updated!'),
+              backgroundColor: Colors.teal),
+        );
+      }
+    } on FirebaseException catch (e) {
+      final message = e.code == 'retry-limit-exceeded'
+          ? 'Upload timed out. Use a smaller image or check Firebase Storage rules and network access.'
+          : 'Failed to upload image: ${e.message ?? e.code}';
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.red),
+        );
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoading = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading profile: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Failed to upload image: $e'),
+              backgroundColor: Colors.red),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isUploadingImage = false);
       }
     }
   }
@@ -2877,13 +3286,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
       phone: _phoneController.text.trim(),
       bio: _bioController.text.trim(),
       interests: interests,
+      profileImageUrl: _profileImageUrl,
+      profileImagePath: _profileImagePath,
     );
 
     try {
       await _firestoreService.saveUserProfile(profile);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile updated successfully!'), backgroundColor: Colors.teal),
+          const SnackBar(
+              content: Text('Profile updated successfully!'),
+              backgroundColor: Colors.teal),
         );
       }
     } catch (e) {
@@ -2898,6 +3311,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   @override
+  void dispose() {
+    _profileSubscription?.cancel();
+    _nameController.dispose();
+    _emailController.dispose();
+    _phoneController.dispose();
+    _bioController.dispose();
+    _interestsController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -2906,7 +3330,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('My Profile', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('My Profile',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
         elevation: 0,
         foregroundColor: Colors.teal,
@@ -2916,12 +3341,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const NotificationsScreen()),
+                MaterialPageRoute(
+                    builder: (context) => const NotificationsScreen()),
               );
             },
           ),
           if (_isSaving)
-            const Center(child: Padding(padding: EdgeInsets.all(16.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))))
+            const Center(
+                child: Padding(
+                    padding: EdgeInsets.all(16.0),
+                    child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2))))
           else
             IconButton(icon: const Icon(Icons.check), onPressed: _saveProfile),
         ],
@@ -2936,21 +3368,50 @@ class _ProfileScreenState extends State<ProfileScreen> {
               Center(
                 child: Stack(
                   children: [
+                    // Prefer authenticated storage bytes over public URL.
                     CircleAvatar(
                       radius: 50,
                       backgroundColor: Colors.teal.shade100,
-                      child: Text(
-                        _nameController.text.isNotEmpty ? _nameController.text[0].toUpperCase() : '?',
-                        style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.teal.shade700),
-                      ),
+                    backgroundImage: _profileImageBytes != null
+                      ? (MemoryImage(_profileImageBytes!)
+                        as ImageProvider<Object>)
+                      : (_profileImageUrl != null
+                        ? (NetworkImage(_profileImageUrl!)
+                          as ImageProvider<Object>)
+                        : null),
+                      child: (_profileImageBytes == null &&
+                              _profileImageUrl == null)
+                          ? Text(
+                              _nameController.text.isNotEmpty
+                                  ? _nameController.text[0].toUpperCase()
+                                  : '?',
+                              style: TextStyle(
+                                  fontSize: 40,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.teal.shade700),
+                            )
+                          : null,
                     ),
                     Positioned(
                       bottom: 0,
                       right: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(color: Colors.teal, shape: BoxShape.circle),
-                        child: const Icon(Icons.camera_alt, color: Colors.white, size: 20),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: _isUploadingImage ? null : _pickProfileImage,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: const BoxDecoration(
+                              color: Colors.teal, shape: BoxShape.circle),
+                          child: _isUploadingImage
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.camera_alt,
+                                  color: Colors.white, size: 20),
+                        ),
                       ),
                     ),
                   ],
@@ -2992,13 +3453,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 icon: Icons.favorite_border,
               ),
               const SizedBox(height: 32),
-              const Text('Settings & Notifications', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal)),
+              const Text('Settings & Notifications',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.teal)),
               const SizedBox(height: 16),
               Card(
                 elevation: 1,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
-                  leading: const Icon(Icons.notifications_active, color: Colors.orange),
+                  leading: const Icon(Icons.notifications_active,
+                      color: Colors.orange),
                   title: const Text('Test Local Notification'),
                   subtitle: const Text('Trigger an immediate alert'),
                   trailing: const Icon(Icons.chevron_right),
@@ -3014,14 +3481,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
               const SizedBox(height: 12),
               Card(
                 elevation: 1,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 child: ListTile(
                   leading: const Icon(Icons.schedule, color: Colors.blue),
                   title: const Text('Schedule Reminder'),
                   subtitle: const Text('Trigger alert in 10 seconds'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
-                    final scheduledDate = DateTime.now().add(const Duration(seconds: 10));
+                    final scheduledDate =
+                        DateTime.now().add(const Duration(seconds: 10));
                     await NotificationService().scheduleNotification(
                       id: 99,
                       title: 'Learning Reminder',
@@ -3030,7 +3499,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     );
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Notification scheduled for 10 seconds from now')),
+                        const SnackBar(
+                            content: Text(
+                                'Notification scheduled for 10 seconds from now')),
                       );
                     }
                   },
@@ -3045,9 +3516,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.teal,
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: const Text('Update Profile', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text('Update Profile',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ),
               const SizedBox(height: 20),
@@ -3057,13 +3531,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     await FirebaseAuth.instance.signOut();
                     if (mounted) {
                       Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(builder: (context) => const LoginScreen()),
+                        MaterialPageRoute(
+                            builder: (context) => const LoginScreen()),
                         (route) => false,
                       );
                     }
                   },
                   icon: const Icon(Icons.logout, color: Colors.red),
-                  label: const Text('Logout', style: TextStyle(color: Colors.red)),
+                  label:
+                      const Text('Logout', style: TextStyle(color: Colors.red)),
                 ),
               ),
             ],
@@ -3117,11 +3593,12 @@ class AddSkillScreen extends StatefulWidget {
 class _AddSkillScreenState extends State<AddSkillScreen> {
   final _formKey = GlobalKey<FormState>();
   final FirestoreService _firestoreService = FirestoreService();
-  
+
   final _nameController = TextEditingController();
   final _aboutController = TextEditingController(); // Also used for Remarks
-  final _learningPointsController = TextEditingController(); // Also used for Other Skills
-  
+  final _learningPointsController =
+      TextEditingController(); // Also used for Other Skills
+
   String _selectedCategory = 'Programming';
   String _selectedLevel = 'Beginner';
   bool _isLoading = false;
@@ -3133,8 +3610,8 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: Text(widget.isOffered ? 'Offer a Skill' : 'Request a Skill', 
-          style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(widget.isOffered ? 'Offer a Skill' : 'Request a Skill',
+            style: const TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
         elevation: 0,
         foregroundColor: Colors.teal,
@@ -3146,17 +3623,19 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildSectionTitle(widget.isOffered ? 'Skill Details' : 'What do you want to learn?'),
+              _buildSectionTitle(widget.isOffered
+                  ? 'Skill Details'
+                  : 'What do you want to learn?'),
               const SizedBox(height: 16),
-              
               _buildTextField(
                 controller: _nameController,
                 label: 'Skill Name',
-                hint: widget.isOffered ? 'e.g. Flutter Development' : 'e.g. Piano Lessons',
+                hint: widget.isOffered
+                    ? 'e.g. Flutter Development'
+                    : 'e.g. Piano Lessons',
                 icon: Icons.school_outlined,
                 validator: (v) => v!.isEmpty ? 'Please enter skill name' : null,
               ),
-              
               if (widget.isOffered) ...[
                 const SizedBox(height: 16),
                 _buildDropdownField(
@@ -3167,7 +3646,6 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
                   icon: Icons.category_outlined,
                 ),
               ],
-              
               const SizedBox(height: 16),
               _buildDropdownField(
                 label: 'Skill Level',
@@ -3176,30 +3654,32 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
                 onChanged: (val) => setState(() => _selectedLevel = val!),
                 icon: Icons.trending_up,
               ),
-              
               const SizedBox(height: 16),
               _buildTextField(
                 controller: _aboutController,
-                label: widget.isOffered ? 'About this skill' : 'Remarks / Requirements',
-                hint: widget.isOffered 
-                  ? 'Describe what you can teach...' 
-                  : 'Any specific language or focus area?',
+                label: widget.isOffered
+                    ? 'About this skill'
+                    : 'Remarks / Requirements',
+                hint: widget.isOffered
+                    ? 'Describe what you can teach...'
+                    : 'Any specific language or focus area?',
                 icon: Icons.info_outline,
                 maxLines: 4,
-                validator: (v) => v!.isEmpty ? 'Please provide some details' : null,
+                validator: (v) =>
+                    v!.isEmpty ? 'Please provide some details' : null,
               ),
-              
               const SizedBox(height: 16),
               _buildTextField(
                 controller: _learningPointsController,
-                label: widget.isOffered ? 'What they will learn (one per line)' : 'Other relevant skills you know',
-                hint: widget.isOffered 
-                  ? 'Widget tree\nState management\nFirebase' 
-                  : 'Java, SQL, etc.',
+                label: widget.isOffered
+                    ? 'What they will learn (one per line)'
+                    : 'Other relevant skills you know',
+                hint: widget.isOffered
+                    ? 'Widget tree\nState management\nFirebase'
+                    : 'Java, SQL, etc.',
                 icon: widget.isOffered ? Icons.list : Icons.extension_outlined,
                 maxLines: 3,
               ),
-              
               const SizedBox(height: 40),
               SizedBox(
                 width: double.infinity,
@@ -3209,12 +3689,14 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.teal,
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: _isLoading 
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : Text(widget.isOffered ? 'Post Skill' : 'Submit Request', 
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : Text(widget.isOffered ? 'Post Skill' : 'Submit Request',
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               ),
             ],
@@ -3228,14 +3710,14 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
-    
+
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     try {
       if (widget.isOffered) {
         final profile = await _firestoreService.getUserProfile();
-        
+
         // Fetch image from Unsplash
         final unsplashService = UnsplashService();
         final imageUrl = await unsplashService.getSkillImage(
@@ -3253,7 +3735,10 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
           category: _selectedCategory,
           level: _selectedLevel,
           about: _aboutController.text.trim(),
-          learningPoints: _learningPointsController.text.split('\n').where((s) => s.trim().isNotEmpty).toList(),
+          learningPoints: _learningPointsController.text
+              .split('\n')
+              .where((s) => s.trim().isNotEmpty)
+              .toList(),
           imageUrl: imageUrl,
         );
         await _firestoreService.addOfferedSkill(skill);
@@ -3262,22 +3747,30 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
           id: '',
           userId: user.uid,
           name: _nameController.text.trim(),
+          category: _selectedCategory,
           level: _selectedLevel,
           remarks: _aboutController.text.trim(),
-          otherRelevantSkills: _learningPointsController.text.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList(),
+          otherRelevantSkills: _learningPointsController.text
+              .split(',')
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)
+              .toList(),
         );
         await _firestoreService.addWantedSkill(skill);
       }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(widget.isOffered ? 'Skill added!' : 'Request submitted!'), backgroundColor: Colors.green),
+          SnackBar(
+              content: Text(
+                  widget.isOffered ? 'Skill added!' : 'Request submitted!'),
+              backgroundColor: Colors.green),
         );
 
         // Trigger Local Notification for CRUD event
         await NotificationService().showLocalNotification(
           title: widget.isOffered ? 'Skill Posted' : 'Learning Request Added',
-          body: widget.isOffered 
+          body: widget.isOffered
               ? 'Your skill "${_nameController.text}" is now live for swapping.'
               : 'Your interest in "${_nameController.text}" has been recorded.',
           payload: 'my_skills',
@@ -3297,7 +3790,9 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal));
+    return Text(title,
+        style: const TextStyle(
+            fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal));
   }
 
   Widget _buildTextField({
@@ -3334,7 +3829,8 @@ class _AddSkillScreenState extends State<AddSkillScreen> {
   }) {
     return DropdownButtonFormField<String>(
       value: value,
-      items: items.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(),
+      items:
+          items.map((i) => DropdownMenuItem(value: i, child: Text(i))).toList(),
       onChanged: onChanged,
       decoration: InputDecoration(
         labelText: label,
@@ -3356,11 +3852,13 @@ class NotificationsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return const Scaffold(body: Center(child: Text('Please login')));
+    if (user == null)
+      return const Scaffold(body: Center(child: Text('Please login')));
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Notifications', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Notifications',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
         elevation: 0,
         foregroundColor: Colors.teal,
@@ -3380,9 +3878,11 @@ class NotificationsScreen extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.notifications_none, size: 64, color: Colors.grey[300]),
+                  Icon(Icons.notifications_none,
+                      size: 64, color: Colors.grey[300]),
                   const SizedBox(height: 16),
-                  Text('No notifications yet', style: TextStyle(color: Colors.grey[500])),
+                  Text('No notifications yet',
+                      style: TextStyle(color: Colors.grey[500])),
                 ],
               ),
             );
@@ -3396,22 +3896,22 @@ class NotificationsScreen extends StatelessWidget {
               final doc = snapshot.data!.docs[index];
               final data = doc.data() as Map<String, dynamic>;
               final notification = NotificationModel.fromMap(data, doc.id);
-              
+
               return ListTile(
                 leading: CircleAvatar(
-                  backgroundColor: notification.title.contains('Match') 
-                      ? Colors.orange.shade50 
+                  backgroundColor: notification.title.contains('Match')
+                      ? Colors.orange.shade50
                       : Colors.teal.shade50,
                   child: Icon(
-                    notification.title.contains('Match') 
-                        ? Icons.celebration 
-                        : Icons.notifications, 
-                    color: notification.title.contains('Match') 
-                        ? Colors.orange 
-                        : Colors.teal
-                  ),
+                      notification.title.contains('Match')
+                          ? Icons.celebration
+                          : Icons.notifications,
+                      color: notification.title.contains('Match')
+                          ? Colors.orange
+                          : Colors.teal),
                 ),
-                title: Text(notification.title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                title: Text(notification.title,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -3440,4 +3940,245 @@ class NotificationsScreen extends StatelessWidget {
     if (diff.inDays < 1) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🚀 Advanced Features Hub
+// ─────────────────────────────────────────────────────────────────────────────
+class AdvancedFeaturesHub extends StatelessWidget {
+  const AdvancedFeaturesHub({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final features = [
+      _FeatureCard(
+        title: 'Skill Meetup Map',
+        subtitle: 'Find skill meetups near you\nwith multiple map markers',
+        icon: Icons.map_rounded,
+        gradient: [const Color(0xFF00897B), const Color(0xFF4DB6AC)],
+        tags: ['GPS', 'Multiple Markers', 'Map Toggle'],
+        onTap: () => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const MapScreen())),
+      ),
+      _FeatureCard(
+        title: 'Sensor Dashboard',
+        subtitle: 'Live accelerometer & gyroscope\nwith shake detection',
+        icon: Icons.sensors,
+        gradient: [const Color(0xFF6A1B9A), const Color(0xFFAB47BC)],
+        tags: ['Real-time', 'Accelerometer', 'Gyroscope'],
+        onTap: () => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const SensorScreen())),
+      ),
+      _FeatureCard(
+        title: 'Media Upload',
+        subtitle:
+            'Pick multiple files from gallery\nwith secure upload progress',
+        icon: Icons.photo_library_rounded,
+        gradient: [const Color(0xFF1565C0), const Color(0xFF42A5F5)],
+        tags: ['Multi-file', 'Camera', 'Secure Storage'],
+        onTap: () => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const MediaScreen())),
+      ),
+      _FeatureCard(
+        title: 'Analytics & Charts',
+        subtitle:
+            'Animated bar, line & pie charts\nfor skill exchange insights',
+        icon: Icons.bar_chart_rounded,
+        gradient: [const Color(0xFFE65100), const Color(0xFFFF8A65)],
+        tags: ['Bar Chart', 'Line Chart', 'Pie Chart'],
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const AnalyticsScreen())),
+      ),
+      _FeatureCard(
+        title: 'QR Scanner',
+        subtitle: 'Scan QR codes to discover skills\n(demo mode on emulator)',
+        icon: Icons.qr_code_scanner_rounded,
+        gradient: [const Color(0xFF00695C), const Color(0xFF80CBC4)],
+        tags: ['QR Code', 'Barcode', 'Demo Mode'],
+        onTap: () => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const ScannerScreen())),
+      ),
+    ];
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 180,
+            pinned: true,
+            backgroundColor: Colors.teal,
+            flexibleSpace: FlexibleSpaceBar(
+              title: const Text('Explore+',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, color: Colors.white)),
+              background: Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF004D40), Color(0xFF00897B)],
+                  ),
+                ),
+                child: Stack(
+                  children: [
+                    Positioned(
+                      right: -20,
+                      top: -20,
+                      child: Container(
+                        width: 160,
+                        height: 160,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white.withOpacity(0.06),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: -30,
+                      bottom: -30,
+                      child: Container(
+                        width: 200,
+                        height: 200,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white.withOpacity(0.04),
+                        ),
+                      ),
+                    ),
+                    const Positioned(
+                      left: 16,
+                      bottom: 56,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Advanced Features',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 14)),
+                          Text(
+                              'Maps \u2022 Sensors \u2022 Media\nCharts \u2022 Scanner',
+                              style: TextStyle(
+                                  color: Colors.white60, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: const EdgeInsets.all(16),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, index) {
+                  final f = features[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: _buildFeatureTile(context, f),
+                  );
+                },
+                childCount: features.length,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFeatureTile(BuildContext context, _FeatureCard f) {
+    return InkWell(
+      onTap: f.onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            colors: f.gradient,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: f.gradient.last.withOpacity(0.4),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(f.icon, color: Colors.white, size: 32),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(f.title,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text(f.subtitle,
+                        style: TextStyle(
+                            color: Colors.white.withOpacity(0.82),
+                            fontSize: 12)),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 6,
+                      children: f.tags
+                          .map((tag) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(tag,
+                                    style: const TextStyle(
+                                        color: Colors.white, fontSize: 11)),
+                              ))
+                          .toList(),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.arrow_forward_ios,
+                  color: Colors.white54, size: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FeatureCard {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final List<Color> gradient;
+  final List<String> tags;
+  final VoidCallback onTap;
+
+  const _FeatureCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.gradient,
+    required this.tags,
+    required this.onTap,
+  });
 }

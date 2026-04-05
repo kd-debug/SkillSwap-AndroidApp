@@ -5,6 +5,10 @@ class UserProfile {
   final String phone;
   final String bio;
   final List<String> interests;
+  final String? profileImageUrl;
+  final String? profileImagePath;
+  final double? latitude;
+  final double? longitude;
 
   UserProfile({
     required this.uid,
@@ -13,6 +17,10 @@ class UserProfile {
     required this.phone,
     required this.bio,
     required this.interests,
+    this.profileImageUrl,
+    this.profileImagePath,
+    this.latitude,
+    this.longitude,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> map, String uid) {
@@ -23,6 +31,10 @@ class UserProfile {
       phone: map['phone'] ?? '',
       bio: map['bio'] ?? '',
       interests: List<String>.from(map['interests'] ?? []),
+      profileImageUrl: map['profileImageUrl'] as String?,
+      profileImagePath: map['profileImagePath'] as String?,
+      latitude: (map['latitude'] as num?)?.toDouble(),
+      longitude: (map['longitude'] as num?)?.toDouble(),
     );
   }
 
@@ -33,6 +45,10 @@ class UserProfile {
       'phone': phone,
       'bio': bio,
       'interests': interests,
+      'profileImageUrl': profileImageUrl,
+      'profileImagePath': profileImagePath,
+      'latitude': latitude,
+      'longitude': longitude,
     };
   }
 
@@ -42,6 +58,10 @@ class UserProfile {
     String? phone,
     String? bio,
     List<String>? interests,
+    String? profileImageUrl,
+    String? profileImagePath,
+    double? latitude,
+    double? longitude,
   }) {
     return UserProfile(
       uid: uid,
@@ -50,6 +70,10 @@ class UserProfile {
       phone: phone ?? this.phone,
       bio: bio ?? this.bio,
       interests: interests ?? this.interests,
+      profileImageUrl: profileImageUrl ?? this.profileImageUrl,
+      profileImagePath: profileImagePath ?? this.profileImagePath,
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
     );
   }
 }
