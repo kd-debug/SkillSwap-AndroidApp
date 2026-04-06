@@ -20,6 +20,92 @@ class _RequestsScreenState extends State<RequestsScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+
+    // Listen for new messages and show notifications
+    _listenForNewMessages();
+  }
+
+  void _listenForNewMessages() {
+    _firestoreService.getNewMessagesStream().listen((messages) {
+      // Show notification for each new message
+      for (final messageData in messages) {
+        if (mounted) {
+          _showMessageNotification(
+            senderName: messageData['senderName'] ?? 'Someone',
+            messageText: messageData['messageText'] ?? '',
+            skillName: messageData['requestedSkillName'] ?? 'a skill',
+            chatId: messageData['chatId'] ?? '',
+          );
+        }
+      }
+    });
+  }
+
+  void _showMessageNotification({
+    required String senderName,
+    required String messageText,
+    required String skillName,
+    required String chatId,
+  }) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'New message from $senderName',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              messageText.length > 50
+                  ? '${messageText.substring(0, 50)}...'
+                  : messageText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFF005B5B),
+        duration: const Duration(seconds: 5),
+        action: SnackBarAction(
+          label: 'View Chat',
+          textColor: Colors.white,
+          onPressed: () {
+            // Navigate to the specific chat
+            _openChatFromNotification(chatId);
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openChatFromNotification(String chatId) async {
+    try {
+      // Get the skill request associated with this chat
+      final request = await _firestoreService.getSkillRequestById(chatId);
+      if (request != null && mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => SkillChatScreen(request: request),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not open chat: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -154,7 +240,8 @@ class RequestCard extends StatelessWidget {
         .where((s) => s.isNotEmpty)
         .where(
           (s) =>
-              s.toLowerCase() != request.requestedSkillName.trim().toLowerCase(),
+              s.toLowerCase() !=
+              request.requestedSkillName.trim().toLowerCase(),
         )
         .toSet()
         .toList();
@@ -294,6 +381,44 @@ class RequestCard extends StatelessWidget {
                 style: TextStyle(
                     fontWeight: FontWeight.bold, color: Colors.green.shade700),
               ),
+              const SizedBox(height: 10),
+              StreamBuilder<String?>(
+                stream: FirestoreService().getChatLastMessage(
+                    FirestoreService().chatIdForRequest(request.id)),
+                builder: (context, snapshot) {
+                  final text = snapshot.data;
+                  if (text == null || text.trim().isEmpty) {
+                    return Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.teal.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        'No messages yet. Start chat to coordinate your swap.',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    );
+                  }
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.teal.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      'Latest message: $text',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  );
+                },
+              ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
@@ -376,7 +501,8 @@ class RequestCard extends StatelessWidget {
   }
 
   void _showAcceptDialog(BuildContext context) async {
-    final liveOfferedSkills = await FirestoreService().getAllOfferedSkills().first;
+    final liveOfferedSkills =
+        await FirestoreService().getAllOfferedSkills().first;
     if (!context.mounted) return;
 
     final liveSkillNames = liveOfferedSkills
@@ -391,7 +517,8 @@ class RequestCard extends StatelessWidget {
         .where((s) => liveSkillNames.contains(s))
         .where(
           (s) =>
-              s.toLowerCase() != request.requestedSkillName.trim().toLowerCase(),
+              s.toLowerCase() !=
+              request.requestedSkillName.trim().toLowerCase(),
         )
         .toSet()
         .toList();
@@ -400,7 +527,8 @@ class RequestCard extends StatelessWidget {
       filteredSkills.addAll(
         liveSkillNames
             .where((s) =>
-                s.toLowerCase() != request.requestedSkillName.trim().toLowerCase())
+                s.toLowerCase() !=
+                request.requestedSkillName.trim().toLowerCase())
             .toList(),
       );
     }
@@ -525,7 +653,8 @@ class RequestCard extends StatelessWidget {
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   onPressed: () async {
-                    await FirestoreService().respondToRequest(request.id, 'accepted');
+                    await FirestoreService()
+                        .respondToRequest(request.id, 'accepted');
                     if (context.mounted) Navigator.pop(context);
                   },
                   icon: const Icon(Icons.school_outlined),

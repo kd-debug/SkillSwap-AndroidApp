@@ -258,6 +258,19 @@ class FirestoreService {
     await _requestsRef.doc(requestId).update(data);
   }
 
+  Future<SkillRequest?> getSkillRequestById(String requestId) async {
+    try {
+      final doc = await _requestsRef.doc(requestId).get();
+      if (doc.exists) {
+        return SkillRequest.fromMap(doc.data() as Map<String, dynamic>, doc.id);
+      }
+      return null;
+    } catch (e) {
+      print('Error getting skill request: $e');
+      return null;
+    }
+  }
+
   // --- Chat Methods ---
 
   CollectionReference get _chatsRef => _firestore.collection('skillChats');
@@ -293,6 +306,10 @@ class FirestoreService {
   Future<void> sendChatMessage({
     required String chatId,
     required String requestId,
+    required String fromUserId,
+    required String fromUserName,
+    required String toUserId,
+    required String toUserName,
     required String senderId,
     required String senderName,
     required String recipientId,
@@ -304,9 +321,14 @@ class FirestoreService {
     final chatDoc = _chatsRef.doc(chatId);
     await chatDoc.set({
       'requestId': requestId,
+      'fromUserId': fromUserId,
+      'fromUserName': fromUserName,
+      'toUserId': toUserId,
+      'toUserName': toUserName,
       'updatedAt': FieldValue.serverTimestamp(),
       'lastMessage': trimmed,
       'lastMessageBy': senderId,
+      'lastMessageByName': senderName,
     }, SetOptions(merge: true));
 
     await chatDoc.collection('messages').add({
@@ -317,6 +339,53 @@ class FirestoreService {
       'recipientId': recipientId,
       'text': trimmed,
       'timestamp': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Stream<String?> getChatLastMessage(String chatId) {
+    return _chatsRef.doc(chatId).snapshots().map((doc) {
+      if (!doc.exists) return null;
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) return null;
+      return data['lastMessage']?.toString();
+    });
+  }
+
+  /// Stream for new messages received by the current user
+  /// Returns a list of maps with: {chatId, senderName, messageText, requestedSkillName}
+  Stream<List<Map<String, dynamic>>> getNewMessagesStream() {
+    if (_authUser == null) return Stream.value([]);
+    final currentUserId = _authUser!.uid;
+
+    // Stream all chats where user is the recipient
+    return _chatsRef
+        .where('toUserId', isEqualTo: currentUserId)
+        .snapshots()
+        .asyncMap((chats) async {
+      final newMessages = <Map<String, dynamic>>[];
+
+      for (var chatDoc in chats.docs) {
+        try {
+          final chatData = chatDoc.data() as Map<String, dynamic>;
+          final lastMsgBy = chatData['lastMessageBy']?.toString() ?? '';
+
+          // Only include if last message is from the other user
+          if (lastMsgBy != currentUserId && lastMsgBy.isNotEmpty) {
+            newMessages.add({
+              'chatId': chatDoc.id,
+              'senderName':
+                  chatData['lastMessageByName']?.toString() ?? 'Someone',
+              'messageText': chatData['lastMessage']?.toString() ?? '',
+              'requestedSkillName':
+                  chatData['requestedSkillName']?.toString() ?? 'a skill',
+            });
+          }
+        } catch (e) {
+          print('Error processing chat doc: $e');
+        }
+      }
+
+      return newMessages;
     });
   }
 

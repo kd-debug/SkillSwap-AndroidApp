@@ -24,7 +24,20 @@ class _SkillChatScreenState extends State<SkillChatScreen> {
   @override
   void initState() {
     super.initState();
-    _firestoreService.ensureChatRoom(widget.request);
+    _loadCurrentUserName();
+    Future<void>(() async {
+      try {
+        await _firestoreService.ensureChatRoom(widget.request);
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not initialize chat: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    });
   }
 
   @override
@@ -38,8 +51,8 @@ class _SkillChatScreenState extends State<SkillChatScreen> {
 
   String get _currentUserId => FirebaseAuth.instance.currentUser?.uid ?? '';
 
-  String get _currentUserName =>
-      FirebaseAuth.instance.currentUser?.displayName ?? 'You';
+  // This will be updated in initState to fetch from user profile
+  String _currentUserName = 'You';
 
   String get _otherUserName {
     final currentUserId = _currentUserId;
@@ -57,6 +70,19 @@ class _SkillChatScreenState extends State<SkillChatScreen> {
     return widget.request.fromUserId;
   }
 
+  Future<void> _loadCurrentUserName() async {
+    try {
+      final profile = await _firestoreService.getUserProfile();
+      if (profile != null && mounted) {
+        setState(() {
+          _currentUserName = profile.name ?? 'You';
+        });
+      }
+    } catch (e) {
+      print('Error loading user profile: $e');
+    }
+  }
+
   Future<void> _sendMessage() async {
     if (_isSending) return;
     final text = _messageController.text.trim();
@@ -67,12 +93,25 @@ class _SkillChatScreenState extends State<SkillChatScreen> {
       await _firestoreService.sendChatMessage(
         chatId: _chatId,
         requestId: widget.request.id,
+        fromUserId: widget.request.fromUserId,
+        fromUserName: widget.request.fromUserName,
+        toUserId: widget.request.toUserId,
+        toUserName: widget.request.toUserName,
         senderId: _currentUserId,
         senderName: _currentUserName,
         recipientId: _otherUserId,
         text: text,
       );
       _messageController.clear();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Message failed to send: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _isSending = false);
     }
@@ -143,6 +182,18 @@ class _SkillChatScreenState extends State<SkillChatScreen> {
             child: StreamBuilder<List<ChatMessage>>(
               stream: _firestoreService.getChatMessages(_chatId),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Text(
+                        'Chat could not load: ${snapshot.error}',
+                        style: TextStyle(color: Colors.red.shade700),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                }
                 final messages = snapshot.data ?? [];
                 if (messages.isEmpty) {
                   return Center(
@@ -200,8 +251,7 @@ class _SkillChatScreenState extends State<SkillChatScreen> {
                       textInputAction: TextInputAction.send,
                       onSubmitted: (_) => _sendMessage(),
                       decoration: InputDecoration(
-                        hintText: 'Write a message...'
-                            ,
+                        hintText: 'Write a message...',
                         filled: true,
                         fillColor: const Color(0xFFF3F7F7),
                         contentPadding: const EdgeInsets.symmetric(

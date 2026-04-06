@@ -12,6 +12,7 @@ import 'package:desktop_webview_auth/google.dart' as desktop_google;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'firebase_options.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'core/services/unsplash_service.dart';
@@ -1361,6 +1362,12 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
+                                  _buildAnalyticsDashboard(
+                                    sentSnapshot.data ?? const [],
+                                    receivedSnapshot.data ?? const [],
+                                    discoverySkills.length,
+                                  ),
+                                  const SizedBox(height: 16),
                                   _buildCategorySection(),
                                   const SizedBox(height: 24),
                                   if (trendingSkills.isNotEmpty) ...[
@@ -1452,6 +1459,230 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAnalyticsDashboard(
+    List<SkillRequest> sent,
+    List<SkillRequest> received,
+    int discoverableSkills,
+  ) {
+    final allRequests = [...sent, ...received];
+    final accepted = allRequests.where((r) => r.status == 'accepted').length;
+    final pending = allRequests.where((r) => r.status == 'pending').length;
+    final declined = allRequests.where((r) => r.status == 'declined').length;
+    final total = allRequests.length;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF005B5B), Color(0xFF149D9D)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.15),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Your Learning Dashboard',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Track your skill exchange progress and opportunities',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 24),
+            // Key Metrics Row
+            Row(
+              children: [
+                _buildMetricCard('Accepted', accepted, Icons.check_circle,
+                    Colors.green.shade400),
+                const SizedBox(width: 12),
+                _buildMetricCard(
+                    'Pending', pending, Icons.schedule, Colors.orange.shade400),
+                const SizedBox(width: 12),
+                _buildMetricCard('Discover', discoverableSkills, Icons.explore,
+                    Colors.blue.shade400),
+              ],
+            ),
+            const SizedBox(height: 24),
+            // Pie Chart for Request Distribution
+            if (total > 0)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Request Status Distribution',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 200,
+                    child: PieChart(
+                      PieChartData(
+                        sections: _buildPieChartSections(
+                            accepted, pending, declined, total),
+                        centerSpaceRadius: 50,
+                        sectionsSpace: 2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildLegendItem('Accepted', Colors.green.shade400),
+                      _buildLegendItem('Pending', Colors.orange.shade400),
+                      if (declined > 0)
+                        _buildLegendItem('Declined', Colors.red.shade400),
+                    ],
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricCard(
+      String label, int value, IconData icon, Color iconColor) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(16),
+          border:
+              Border.all(color: Colors.white.withValues(alpha: 0.2), width: 1),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: iconColor, size: 22),
+            const SizedBox(height: 6),
+            Text(
+              value.toString(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 11,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<PieChartSectionData> _buildPieChartSections(
+    int accepted,
+    int pending,
+    int declined,
+    int total,
+  ) {
+    final sections = <PieChartSectionData>[];
+
+    if (accepted > 0) {
+      sections.add(
+        PieChartSectionData(
+          value: accepted.toDouble(),
+          title: '$accepted',
+          color: Colors.green.shade400,
+          radius: 60,
+          titleStyle: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
+        ),
+      );
+    }
+
+    if (pending > 0) {
+      sections.add(
+        PieChartSectionData(
+          value: pending.toDouble(),
+          title: '$pending',
+          color: Colors.orange.shade400,
+          radius: 60,
+          titleStyle: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
+        ),
+      );
+    }
+
+    if (declined > 0) {
+      sections.add(
+        PieChartSectionData(
+          value: declined.toDouble(),
+          title: '$declined',
+          color: Colors.red.shade400,
+          radius: 60,
+          titleStyle: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
+        ),
+      );
+    }
+
+    return sections;
+  }
+
+  Widget _buildLegendItem(String label, Color color) {
+    return Row(
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 11,
+          ),
+        ),
+      ],
     );
   }
 
@@ -3211,8 +3442,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (user == null) return;
 
     try {
-      final picked = await ImagePicker()
-          .pickImage(
+      final picked = await ImagePicker().pickImage(
         source: ImageSource.gallery,
         imageQuality: 45,
         maxWidth: 1024,
@@ -3372,13 +3602,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     CircleAvatar(
                       radius: 50,
                       backgroundColor: Colors.teal.shade100,
-                    backgroundImage: _profileImageBytes != null
-                      ? (MemoryImage(_profileImageBytes!)
-                        as ImageProvider<Object>)
-                      : (_profileImageUrl != null
-                        ? (NetworkImage(_profileImageUrl!)
-                          as ImageProvider<Object>)
-                        : null),
+                      backgroundImage: _profileImageBytes != null
+                          ? (MemoryImage(_profileImageBytes!)
+                              as ImageProvider<Object>)
+                          : (_profileImageUrl != null
+                              ? (NetworkImage(_profileImageUrl!)
+                                  as ImageProvider<Object>)
+                              : null),
                       child: (_profileImageBytes == null &&
                               _profileImageUrl == null)
                           ? Text(

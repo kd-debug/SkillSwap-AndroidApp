@@ -15,11 +15,14 @@ class NotificationService {
   NotificationService._internal();
 
   final FirebaseMessaging _fcm = FirebaseMessaging.instance;
-  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
 
   // Stream for in-app notification alerts
-  final _notificationStreamController = StreamController<Map<String, String>>.broadcast();
-  Stream<Map<String, String>> get onNotificationReceived => _notificationStreamController.stream;
+  final _notificationStreamController =
+      StreamController<Map<String, String>>.broadcast();
+  Stream<Map<String, String>> get onNotificationReceived =>
+      _notificationStreamController.stream;
 
   bool _isInitialized = false;
 
@@ -34,7 +37,8 @@ class NotificationService {
     // 2. Initialize Local Notifications
     const AndroidInitializationSettings androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
+    const DarwinInitializationSettings iosSettings =
+        DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
       requestSoundPermission: true,
@@ -47,7 +51,7 @@ class NotificationService {
 
     if (!kIsWeb) {
       await _localNotifications.initialize(
-        settings: initSettings,
+        initSettings,
         onDidReceiveNotificationResponse: (NotificationResponse details) {
           // Handle notification tap
           print('Notification tapped: ${details.payload}');
@@ -63,7 +67,8 @@ class NotificationService {
 
     // 5. Handle FCM foreground messages
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      print('FCM Message received in foreground: ${message.notification?.title}');
+      print(
+          'FCM Message received in foreground: ${message.notification?.title}');
       if (message.notification != null) {
         showLocalNotification(
           title: message.notification!.title ?? 'New Message',
@@ -100,12 +105,14 @@ class NotificationService {
     _notificationStreamController.add({'title': title, 'body': body});
 
     // 2. Persist notification to Firestore for the history center (all platforms)
-    await _saveNotificationToFirestore(title: title, body: body, payload: payload);
+    await _saveNotificationToFirestore(
+        title: title, body: body, payload: payload);
 
     // 3. Show System Notification (Mobile/Desktop supported only)
     if (kIsWeb) return;
 
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+    const AndroidNotificationDetails androidDetails =
+        AndroidNotificationDetails(
       'skillswap_notifications',
       'SkillSwap Notifications',
       channelDescription: 'Notifications for skill updates and requests',
@@ -119,10 +126,10 @@ class NotificationService {
     );
 
     await _localNotifications.show(
-      id: DateTime.now().millisecond,
-      title: title,
-      body: body,
-      notificationDetails: details,
+      DateTime.now().millisecond,
+      title,
+      body,
+      details,
       payload: payload,
     );
   }
@@ -155,10 +162,10 @@ class NotificationService {
   }
 
   // --- Matchmaking Logic (Practical Scenario) ---
-  
+
   void startMatchmakingListener(String currentUserId) {
     print('DEBUG: Starting matchmaking listener for user: $currentUserId');
-    
+
     // Listen for NEW offered skills
     FirebaseFirestore.instance
         .collection('offeredSkills')
@@ -169,8 +176,9 @@ class NotificationService {
           final skillData = change.doc.data() as Map<String, dynamic>;
           final ownerId = skillData['userId'];
           final skillName = skillData['name'];
-          
-          if (ownerId == currentUserId) continue; // Don't notify about own skills
+
+          if (ownerId == currentUserId)
+            continue; // Don't notify about own skills
 
           // Check if this skill matches ANY of current user's wanted skills
           final wantedSnapshot = await FirebaseFirestore.instance
@@ -180,19 +188,19 @@ class NotificationService {
 
           for (var wantedDoc in wantedSnapshot.docs) {
             final wantedName = wantedDoc.data()['name'] as String;
-            
+
             // Simple case-insensitive match
             if (skillName.toLowerCase().contains(wantedName.toLowerCase()) ||
                 wantedName.toLowerCase().contains(skillName.toLowerCase())) {
-              
               print('MATCH FOUND: $skillName matches wanted $wantedName');
-              
+
               showLocalNotification(
                 title: 'Skill Match Found! 🎯',
-                body: 'Someone just offered "$skillName", which matches your interest in "$wantedName".',
+                body:
+                    'Someone just offered "$skillName", which matches your interest in "$wantedName".',
                 payload: 'discover',
               );
-              break; 
+              break;
             }
           }
         }
@@ -207,13 +215,13 @@ class NotificationService {
     required DateTime scheduledDate,
   }) async {
     if (kIsWeb) return;
-    
+
     await _localNotifications.zonedSchedule(
-      id: id,
-      title: title,
-      body: body,
-      scheduledDate: tz.TZDateTime.from(scheduledDate, tz.local),
-      notificationDetails: const NotificationDetails(
+      id,
+      title,
+      body,
+      tz.TZDateTime.from(scheduledDate, tz.local),
+      const NotificationDetails(
         android: AndroidNotificationDetails(
           'skillswap_reminders',
           'SkillSwap Reminders',
@@ -222,6 +230,8 @@ class NotificationService {
         ),
         iOS: DarwinNotificationDetails(),
       ),
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       matchDateTimeComponents: DateTimeComponents.time,
     );
